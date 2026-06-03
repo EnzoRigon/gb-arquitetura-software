@@ -87,3 +87,120 @@ def test_logout_invalidates_token(client, user_factory, token_factory, auth_head
 
     forbidden_response = client.get("/tasks", headers=headers)
     assert forbidden_response.status_code == 401
+
+
+def test_export_csv_empty(client, user_factory, token_factory, auth_header):
+    user_factory("Export User", "export@example.com")
+    token = token_factory("export@example.com")
+    headers = auth_header(token)
+
+    response = client.get("/tasks/export/csv", headers=headers)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "Nenhuma tarefa encontrada." in response.text
+
+
+def test_export_csv_with_tasks(client, user_factory, token_factory, auth_header):
+    user_factory("CSV Owner", "csvowner@example.com")
+    token = token_factory("csvowner@example.com")
+    headers = auth_header(token)
+
+    client.post(
+        "/tasks",
+        json={"title": "CSV Task", "description": "desc", "status": "pending", "priority": "high"},
+        headers=headers,
+    )
+
+    response = client.get("/tasks/export/csv", headers=headers)
+    assert response.status_code == 200
+    assert "CSV Task" in response.text
+    assert "high" in response.text
+    assert "pending" in response.text
+
+
+def test_export_csv_filters_by_status(client, user_factory, token_factory, auth_header):
+    user_factory("Filter User", "filter@example.com")
+    token = token_factory("filter@example.com")
+    headers = auth_header(token)
+
+    client.post("/tasks", json={"title": "Pending Task", "status": "pending", "priority": "low"}, headers=headers)
+    client.post("/tasks", json={"title": "Done Task", "status": "done", "priority": "low"}, headers=headers)
+
+    response = client.get("/tasks/export/csv", params={"status": "done"}, headers=headers)
+    assert response.status_code == 200
+    assert "Done Task" in response.text
+    assert "Pending Task" not in response.text
+
+
+def test_export_csv_include_assigned(client, user_factory, token_factory, auth_header):
+    owner = user_factory("Owner Csv", "ownercv@example.com")
+    assignee = user_factory("Assignee Csv", "assigneecv@example.com")
+
+    owner_token = token_factory("ownercv@example.com")
+    owner_headers = auth_header(owner_token)
+    assignee_token = token_factory("assigneecv@example.com")
+    assignee_headers = auth_header(assignee_token)
+
+    client.post(
+        "/tasks",
+        json={"title": "Assigned To Me", "status": "pending", "priority": "medium", "assigned_to_id": assignee["id"]},
+        headers=owner_headers,
+    )
+
+    # sem includeAssigned, assignee não vê a tarefa
+    response_no_flag = client.get("/tasks/export/csv", headers=assignee_headers)
+    assert "Assigned To Me" not in response_no_flag.text
+
+    # com includeAssigned, assignee vê
+    response_with_flag = client.get("/tasks/export/csv", params={"includeAssigned": True}, headers=assignee_headers)
+    assert "Assigned To Me" in response_with_flag.text
+
+
+def test_export_csv_does_not_include_deleted(client, user_factory, token_factory, auth_header):
+    user_factory("Del User", "deluser@example.com")
+    token = token_factory("deluser@example.com")
+    headers = auth_header(token)
+
+    create = client.post(
+        "/tasks",
+        json={"title": "To Be Deleted", "status": "pending", "priority": "low"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+    client.delete(f"/tasks/{task_id}", headers=headers)
+
+    response = client.get("/tasks/export/csv", headers=headers)
+    assert "To Be Deleted" not in response.text
+
+
+def test_export_pdf_returns_pdf(client, user_factory, token_factory, auth_header):
+    user_factory("PDF User", "pdfuser@example.com")
+    token = token_factory("pdfuser@example.com")
+    headers = auth_header(token)
+
+    client.post(
+        "/tasks",
+        json={"title": "PDF Task", "status": "in_progress", "priority": "medium"},
+        headers=headers,
+    )
+
+    response = client.get("/tasks/export/pdf", headers=headers)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content[:4] == b"%PDF"
+
+
+def test_export_pdf_empty(client, user_factory, token_factory, auth_header):
+    user_factory("PDF Empty", "pdfempty@example.com")
+    token = token_factory("pdfempty@example.com")
+    headers = auth_header(token)
+
+    response = client.get("/tasks/export/pdf", headers=headers)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content[:4] == b"%PDF"
+
+
+def test_export_requires_auth(client):
+    assert client.get("/tasks/export/csv").status_code == 401
+    assert client.get("/tasks/export/pdf").status_code == 401
